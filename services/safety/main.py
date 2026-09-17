@@ -9,7 +9,13 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from guardrails import guardrails_engine
+try:
+    from services.safety.guardrails import guardrails_engine
+except ImportError:
+    try:
+        from guardrails import guardrails_engine
+    except ImportError:
+        guardrails_engine = None
 
 app = FastAPI(title="SmartFix Safety Engine Service", version="0.4.0")
 
