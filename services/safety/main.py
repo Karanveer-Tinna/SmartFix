@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from guardrails import guardrails_engine
 
 app = FastAPI(title="SmartFix Safety Engine Service", version="0.4.0")
 
@@ -29,7 +30,35 @@ class SafetyEvaluationRequest(BaseModel):
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "service": "smartfix-safety-engine", "rules_engine": "Deterministic-RuleSet-v1"}
+    return {"status": "ok", "service": "smartfix-safety-engine", "rules_engine": "Deterministic-RuleSet-v1", "guardrails": "5-Tier-Enterprise-Guardrails-Active"}
+
+
+@app.post("/safety/guardrails/evaluate")
+async def evaluate_guardrails(body: SafetyEvaluationRequest) -> dict[str, Any]:
+    """
+    Evaluates query across all 5 SmartFix Enterprise Guardrails:
+    1. Safety Circuit Breaker (Lethal Hazard Block)
+    2. Prompt Injection & Instruction Override Guardrail
+    3. Code Execution Sandbox Security Guardrail
+    4. Numerical & Fact Hallucination Verification Guardrail
+    5. Pydantic Output Schema Guardrail
+    """
+    g1 = guardrails_engine.check_safety_circuit_breaker(body.equipment_id, body.question)
+    g2 = guardrails_engine.check_prompt_injection(body.question)
+    g3 = guardrails_engine.check_code_sandbox_security(body.question)
+    g4 = guardrails_engine.check_hallucination_grounding(body.question, [])
+    g5 = guardrails_engine.check_output_schema({"equipment_id": body.equipment_id, "question": body.question})
+
+    all_checks = [g1, g2, g3, g4, g5]
+    any_blocked = any(not g.passed for g in all_checks)
+
+    return {
+        "equipment_id": body.equipment_id,
+        "overall_decision": "BLOCKED" if any_blocked else "ALLOWED",
+        "guardrail_checks": [g.model_dump() for g in all_checks],
+        "evaluator": "SmartFix Enterprise 5-Tier Guardrails Suite",
+    }
+
 
 
 @app.post("/safety/evaluate")
