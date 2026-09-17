@@ -58,7 +58,7 @@ defineEmits(["select-tab"]);
             <rect x="3" y="3" width="7" height="18" rx="1" />
             <rect x="14" y="3" width="7" height="18" rx="1" />
           </svg>
-          <span>Compare 3 Models</span>
+          <span>Compare 4 Models</span>
         </button>
 
         <button
@@ -70,6 +70,30 @@ defineEmits(["select-tab"]);
             <path d="M18 20V10M12 20V4M6 20v-6" />
           </svg>
           <span>7-Category Benchmark</span>
+        </button>
+
+        <button
+          class="nav-button"
+          :class="{ active: activeTab === 'datalayer' }"
+          @click="$emit('select-tab', 'datalayer')"
+        >
+          <svg class="nav-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <ellipse cx="12" cy="5" rx="9" ry="3" />
+            <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" />
+            <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" />
+          </svg>
+          <span>Data Layer Architecture</span>
+        </button>
+
+        <button
+          class="nav-button"
+          :class="{ active: activeTab === 'guardrails' }"
+          @click="$emit('select-tab', 'guardrails')"
+        >
+          <svg class="nav-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+          </svg>
+          <span>Guardrails Suite</span>
         </button>
 
         <button

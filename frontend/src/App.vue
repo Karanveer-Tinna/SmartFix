@@ -14,6 +14,8 @@ import EmbeddingViewer from "./components/admin/EmbeddingViewer.vue";
 import ExecutionTraceViewer from "./components/admin/ExecutionTraceViewer.vue";
 import RAGRetrievedContextViewer from "./components/admin/RAGRetrievedContextViewer.vue";
 import SafetyAndEquipmentViewer from "./components/admin/SafetyAndEquipmentViewer.vue";
+import DataLayerViewer from "./components/datalayer/DataLayerViewer.vue";
+import GuardrailsViewer from "./components/guardrails/GuardrailsViewer.vue";
 
 import { callAskApi, callCompareApi, fetchBenchmarkResults } from "./api/askApi.js";
 import { DEFAULT_LLM_MODEL, LLM_MODELS, CATEGORY_SAMPLE_QUESTIONS } from "./constants/models.js";
@@ -397,6 +399,16 @@ onMounted(() => {
           :loading="benchmarkLoading"
           @refresh-benchmark="loadBenchmark"
         />
+      </div>
+
+      <!-- Data Layer Architecture & Multi-Store Persistence View -->
+      <div v-else-if="activeTab === 'datalayer'" class="view-container">
+        <DataLayerViewer />
+      </div>
+
+      <!-- Enterprise AI Safety Guardrails Suite View -->
+      <div v-else-if="activeTab === 'guardrails'" class="view-container">
+        <GuardrailsViewer />
       </div>
 
       <!-- Admin Observability View (Exercises 2, 3, 4, 5) -->
