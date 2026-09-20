@@ -1,23 +1,31 @@
 """
-SmartFix Safety Engine Service — Exercise 4
+SmartFix Safety Engine Service — Exercise 4 (Enhanced with Llama Guard 3:1b)
 
-Evaluates explicit rule-based safety constraints.
-Returns ALLOWED / WARNING / BLOCKED with required safety precautions.
+Evaluates safety constraints using Meta's Llama Guard 3 (1B) via the local Ollama API.
+Returns ALLOWED / WARNING / BLOCKED with required safety precautions and LOTO enforcement.
 """
 
+import logging
 from typing import Any
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
 try:
-    from services.safety.guardrails import guardrails_engine
+    from services.safety.guardrails import guardrails_engine, GuardrailCheckResult
 except ImportError:
     try:
-        from guardrails import guardrails_engine
+        from guardrails import guardrails_engine, GuardrailCheckResult
     except ImportError:
         guardrails_engine = None
 
-app = FastAPI(title="SmartFix Safety Engine Service", version="0.4.0")
+logger = logging.getLogger("smartfix.safety-service")
+
+app = FastAPI(
+    title="SmartFix Safety Engine Service",
+    description="Enterprise AI Safety Service powered by Llama Guard 3 (1B) through Ollama API",
+    version="0.5.0",
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -29,186 +37,137 @@ app.add_middleware(
 
 
 class SafetyEvaluationRequest(BaseModel):
-    equipment_id: str = Field(..., description="Target equipment ID (e.g., EQ-1023)")
-    question: str = Field(..., description="User troubleshooting question text")
-    equipment_data: dict[str, Any] = Field(default_factory=dict, description="Equipment metadata")
+    equipment_id: str = Field(..., description="Target equipment ID (e.g., EQ-1023, HA-MICRO-01)")
+    question: str = Field(..., description="Technician troubleshooting question text")
+    equipment_data: dict[str, Any] = Field(default_factory=dict, description="Optional equipment metadata")
 
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "service": "smartfix-safety-engine", "rules_engine": "Deterministic-RuleSet-v1", "guardrails": "5-Tier-Enterprise-Guardrails-Active"}
+    return {
+        "status": "ok",
+        "service": "smartfix-safety-engine",
+        "safety_engine": "Llama-Guard-3:1B",
+        "guardrails": "Llama-Guard-3-Active",
+        "ollama_url": getattr(guardrails_engine, "ollama_url", "http://127.0.0.1:11434"),
+        "model": getattr(guardrails_engine, "model", "llama-guard3:1b"),
+    }
 
 
 @app.post("/safety/guardrails/evaluate")
 async def evaluate_guardrails(body: SafetyEvaluationRequest) -> dict[str, Any]:
     """
-    Evaluates query across all 5 SmartFix Enterprise Guardrails:
-    1. Safety Circuit Breaker (Lethal Hazard Block)
-    2. Prompt Injection & Instruction Override Guardrail
-    3. Code Execution Sandbox Security Guardrail
-    4. Numerical & Fact Hallucination Verification Guardrail
-    5. Pydantic Output Schema Guardrail
+    Evaluates technician query and context across the 5 SmartFix Guardrails
+    backed by Llama Guard 3 (1B) semantic safety classification.
     """
-    g1 = guardrails_engine.check_safety_circuit_breaker(body.equipment_id, body.question)
-    g2 = guardrails_engine.check_prompt_injection(body.question)
+    eq_id = body.equipment_id.upper()
+    eq_name = body.equipment_data.get("name", eq_id)
+    context = f"Equipment ID: {eq_id} ({eq_name})"
+
+    g1 = await guardrails_engine.async_evaluate_llama_guard(
+        query=body.question,
+        guardrail_name="Guardrail 1: Safety Circuit Breaker (Llama Guard 3:1b)",
+        equipment_context=context,
+        fallback_decision="BLOCKED",
+    )
+    g2 = await guardrails_engine.async_evaluate_llama_guard(
+        query=body.question,
+        guardrail_name="Guardrail 2: Prompt Injection Defense (Llama Guard 3:1b)",
+        equipment_context="Security Boundary: Maintenance Diagnostics Only",
+        fallback_decision="INTERCEPTED",
+    )
     g3 = guardrails_engine.check_code_sandbox_security(body.question)
     g4 = guardrails_engine.check_hallucination_grounding(body.question, [])
-    g5 = guardrails_engine.check_output_schema({"equipment_id": body.equipment_id, "question": body.question})
+    g5 = guardrails_engine.check_output_schema({
+        "decision": g1.decision,
+        "warnings": g1.warnings,
+        "required_precautions": ["Mandatory Lockout/Tagout (LOTO)"],
+    })
 
     all_checks = [g1, g2, g3, g4, g5]
     any_blocked = any(not g.passed for g in all_checks)
 
     return {
-        "equipment_id": body.equipment_id,
+        "equipment_id": eq_id,
         "overall_decision": "BLOCKED" if any_blocked else "ALLOWED",
         "guardrail_checks": [g.model_dump() for g in all_checks],
-        "evaluator": "SmartFix Enterprise 5-Tier Guardrails Suite",
+        "evaluator": "SmartFix Enterprise Guardrails Suite (Llama Guard 3:1b)",
     }
-
 
 
 @app.post("/safety/evaluate")
 async def evaluate_safety(body: SafetyEvaluationRequest) -> dict[str, Any]:
     """
-    Deterministic Safety Evaluation Engine.
-
-    Rule Sets:
-    1. BLOCKED: Operations involving high voltage terminal boxes (>400V) without LOTO,
-       or inspecting moving conveyor belts without stopping drive motor.
-    2. WARNING: Hydraulic pressure checks (>200 bar), thermal inspection (>75°C), or live current checks.
-    3. ALLOWED: General inspection, manual readouts, or standard fluid level checks with PPE.
+    Evaluates equipment safety using Llama Guard 3:1b through Ollama API.
+    Determines if query constitutes a BLOCKED lethal hazard, a WARNING requiring precautions,
+    or an ALLOWED standard operation.
     """
-    q_lower = body.question.lower()
     eq_id = body.equipment_id.upper()
+    q_lower = body.question.lower()
+    eq_name = body.equipment_data.get("name", eq_id)
+    eq_category = body.equipment_data.get("category", "")
+    equipment_context = f"Equipment: {eq_name} [{eq_id}] | Category: {eq_category}"
 
-    warnings = []
-    rules_triggered = []
-    required_precautions = []
-    decision = "ALLOWED"
+    # Query Llama Guard 3:1b
+    res = await guardrails_engine.async_evaluate_llama_guard(
+        query=body.question,
+        guardrail_name="Llama Guard 3 Circuit Breaker",
+        equipment_context=equipment_context,
+        fallback_decision="BLOCKED",
+    )
 
-    # Rule 1: High Voltage 400V Terminal Box (BLOCKED if live terminal opening attempted without LOTO)
-    if "400v" in q_lower or "terminal box" in q_lower or "high voltage" in q_lower or eq_id == "EQ-3081":
-        if "open terminal" in q_lower or "touch leads" in q_lower or "live" in q_lower:
-            decision = "BLOCKED"
-            rules_triggered.append("RULE-HV-01: High Voltage Isolation Mandatory")
-            warnings.append("BLOCKED: Attempting to access 400V live electrical terminal box poses fatal shock risk.")
-            required_precautions.extend([
-                "Perform main breaker Lockout/Tagout (LOTO).",
-                "Verify Zero Energy State with calibrated multimeter before touching leads.",
-                "Discharge power factor correction capacitors.",
-            ])
+    warnings = list(res.warnings)
+    rules_triggered = list(res.violation_categories)
+    required_precautions: list[str] = []
 
-    # Rule 2: Moving Conveyor Inspection (BLOCKED if inspecting belt while running)
-    if "conveyor" in q_lower or "belt" in q_lower or eq_id == "EQ-2045":
-        if "moving" in q_lower or "running" in q_lower or "while operating" in q_lower:
-            decision = "BLOCKED"
-            rules_triggered.append("RULE-CV-02: Moving Pinch-Point Hazard Prohibition")
-            warnings.append("BLOCKED: Inspecting or placing hands near moving conveyor pulleys is strictly prohibited.")
-            required_precautions.extend([
-                "Press Emergency Stop (E-STOP) button.",
-                "Apply padlocks to main isolator switch.",
-                "Verify drive motor is fully stopped before clearing belt jams.",
-            ])
-        elif decision != "BLOCKED":
+    if not res.passed:
+        # Llama Guard 3 flagged unsafe operation -> BLOCKED
+        decision = "BLOCKED"
+        rules_triggered.append("LLAMA-GUARD-01: Lethal Operational Hazard Intercepted")
+        required_precautions.extend([
+            "Perform main breaker Lockout/Tagout (LOTO) before opening equipment casing.",
+            "Verify Zero Energy State with a calibrated multimeter before touching internal terminals.",
+            "Never bypass safety door interlocks, thermal cutoffs, or ground fault protections.",
+        ])
+
+        if any(w in q_lower for w in ["capacitor", "microwave", "ha-micro-01"]):
+            required_precautions.append(
+                "Discharge high-voltage capacitor (>2,000V DC) using a 20k-Ohm 20W insulated HV probe."
+            )
+        if any(w in q_lower for w in ["conveyor", "belt", "spin", "drum", "ha-wash-04", "eq-2045"]):
+            required_precautions.append(
+                "Press Emergency Stop (E-STOP) and confirm drive motor has completely stopped before servicing."
+            )
+        if any(w in q_lower for w in ["toaster", "ha-toast-02"]):
+            required_precautions.append(
+                "Unplug appliance from AC socket immediately; never insert conductive metal utensils into live slots."
+            )
+
+    else:
+        # Check for non-lethal caution / warning conditions (thermal surfaces, hydraulic pressures)
+        is_warning = any(
+            w in q_lower
+            for w in [
+                "heating element", "hot surface", "temperature", "thermal", "burner",
+                "pressure", "hydraulic", "degreaser", "grease", "drain pump"
+            ]
+        ) or eq_id in ["HA-TOAST-02", "HA-AIRFRY-03", "HA-OVEN-05", "EQ-1023"]
+
+        if is_warning:
             decision = "WARNING"
-            rules_triggered.append("RULE-CV-01: Conveyor Tension & E-Stop Precaution")
-            warnings.append("WARNING: E-Stop pull-cord must be verified before working near tension pulleys.")
+            rules_triggered.append("LLAMA-GUARD-WARN: Elevated Operational Caution Required")
+            warnings.append("WARNING: Operation involves hot surfaces, mechanical tension, or pressurized fluid lines.")
             required_precautions.extend([
-                "Ensure E-Stop pull-cord switches are operational.",
-                "Wear cut-resistant safety gloves.",
+                "Ensure appliance is disconnected from mains AC power before disassembly or cleaning.",
+                "Allow thermal components to cool down completely (minimum 30–45 minutes).",
+                "Wear heat-resistant safety gloves and safety eye protection.",
+                "Verify hydraulic line pressure reads 0 bar before loosening fittings.",
             ])
-
-    # Rule 3: High Pressure Hydraulics (WARNING for pressure > 200 bar)
-    if "pressure" in q_lower or "hydraulic" in q_lower or "fluid" in q_lower or eq_id == "EQ-1023":
-        if decision != "BLOCKED":
-            decision = "WARNING"
-            rules_triggered.append("RULE-HYD-01: High Pressure Fluid Injection Hazard")
-            warnings.append("WARNING: System operates at high hydraulic pressure (210 bar). High pressure oil injection can cause severe injury.")
-            required_precautions.extend([
-                "Perform LOTO on main drive motor.",
-                "Verify pressure gauge reads 0 bar before loosening any hydraulic line or valve.",
-                "Wear protective safety goggles and heat-resistant gloves.",
-            ])
-
-    # Rule 4: Microwave High-Voltage Capacitor & Radiation Hazard (Household Appliance)
-    if "microwave" in q_lower or eq_id == "HA-MICRO-01":
-        # Check for lethal capacitor or opening casing while energized
-        if "capacitor" in q_lower or "casing" in q_lower or "cabinet" in q_lower or "plugged in" in q_lower or "live" in q_lower:
-            decision = "BLOCKED"
-            rules_triggered.append("RULE-MW-01: Lethal High-Voltage Capacitor Hazard (>2,000V DC)")
-            warnings.append("BLOCKED: Microwave high-voltage capacitor retains lethal 2,000V–4,000V DC charge even when unplugged. Direct contact can be fatal.")
-            required_precautions.extend([
-                "Unplug unit from AC power socket immediately.",
-                "Discharge high-voltage capacitor using a 20k-Ohm 20W insulated HV discharge resistor probe before touching any internal part.",
-                "Never test microwave with cabinet removed while connected to AC power.",
-            ])
-        elif "door open" in q_lower or "interlock" in q_lower or "bypass" in q_lower:
-            decision = "BLOCKED"
-            rules_triggered.append("RULE-MW-02: Microwave Radiation Exposure Hazard (2450 MHz)")
-            warnings.append("BLOCKED: Operating microwave with door open or defeated interlock switches causes severe microwave radiation exposure.")
-            required_precautions.extend([
-                "Never defeat, bypass, or tamper with door safety interlock switches.",
-                "Inspect door seal and choke cavity for physical damage or gaps.",
-                "Perform RF leakage survey before returning unit to service (limit < 5mW/cm²).",
-            ])
-        elif decision != "BLOCKED":
-            decision = "WARNING"
-            rules_triggered.append("RULE-MW-03: General Microwave Electrical Safety")
-            warnings.append("WARNING: Ensure unit is disconnected from mains before cleaning waveguide or turntable drive.")
-            required_precautions.extend([
-                "Unplug microwave from AC socket.",
-                "Clean mica waveguide cover with damp cloth; do not operate if mica sheet is carbonized or burnt.",
-            ])
-
-    # Rule 5: Washing Machine Drum & Water Flood Hazard (Household Appliance)
-    if "washing machine" in q_lower or "washer" in q_lower or eq_id == "HA-WASH-04":
-        if "bypass door" in q_lower or "spin" in q_lower and ("open" in q_lower or "hand" in q_lower):
-            decision = "BLOCKED"
-            rules_triggered.append("RULE-WM-01: High-Speed Spinning Drum Entanglement Hazard")
-            warnings.append("BLOCKED: Attempting to bypass door lock during spin cycle (1200 RPM) creates severe limb entanglement hazard.")
-            required_precautions.extend([
-                "Wait for drum to come to a complete standstill (minimum 2 minutes after power off).",
-                "Use the manual emergency drain/door release cord located behind the drain pump filter access door.",
-                "Never force open the electronic PTC thermal latch.",
-            ])
-        elif decision != "BLOCKED":
-            decision = "WARNING"
-            rules_triggered.append("RULE-WM-02: Water Valve Pressure & Shock Hazard")
-            warnings.append("WARNING: Disconnect water supply taps and unplug unit before servicing drain pump filter or inlet solenoids.")
-            required_precautions.extend([
-                "Turn off cold and hot water inlet supply taps.",
-                "Place a shallow tray under drain pump filter before unscrewing cap to catch residual water.",
-                "Disconnect 230V mains plug.",
-            ])
-
-    # Rule 6: Toaster / Air Fryer / Convection Oven Thermal Hazards (Household Appliances)
-    if any(app_word in q_lower for app_word in ["toaster", "air fryer", "airfryer", "oven"]) or eq_id in ["HA-TOAST-02", "HA-AIRFRY-03", "HA-OVEN-05"]:
-        if decision != "BLOCKED":
-            decision = "WARNING"
-            rules_triggered.append("RULE-TH-01: High Temperature Burn & Heating Element Shock Hazard")
-            warnings.append("WARNING: Internal heating elements operate above 200°C (400°F). Severe burn and electrical shock hazard.")
-            required_precautions.extend([
-                "Unplug appliance from wall socket.",
-                "Allow appliance to cool down completely (minimum 30–45 minutes) before inspection or disassembly.",
-                "Never insert metal utensils (forks/knives) into toaster slots while connected to power.",
-                "Clean crumb trays and grease baskets regularly to prevent grease ignition fires.",
-            ])
-
-    # Rule 7: Range Hood / Kitchen Chimney Grease Hazard
-    if "chimney" in q_lower or "range hood" in q_lower or "hood" in q_lower or eq_id == "HA-CHIM-06":
-        if decision != "BLOCKED":
-            decision = "WARNING"
-            rules_triggered.append("RULE-CHIM-01: Range Hood Grease Fire & Blower Motor Hazard")
-            warnings.append("WARNING: Accumulation of cooking grease in baffle filters creates a fire ignition hazard.")
-            required_precautions.extend([
-                "Switch off circuit breaker or unplug hood before removing filters.",
-                "Soak aluminum or stainless steel baffle filters in warm degreaser solution monthly.",
-                "Ensure blower motor is fully stopped before inspecting internal squirrel-cage impeller.",
-            ])
-
-    # Default ALLOWED precautions
-    if not required_precautions:
-        required_precautions.append("Follow manufacturer operating instructions and ensure appliance is unplugged before cleaning.")
+        else:
+            decision = "ALLOWED"
+            required_precautions.append(
+                "Follow standard operating maintenance protocols and ensure equipment is powered down before servicing."
+            )
 
     return {
         "equipment_id": eq_id,
@@ -216,5 +175,10 @@ async def evaluate_safety(body: SafetyEvaluationRequest) -> dict[str, Any]:
         "warnings": warnings,
         "rules_triggered": rules_triggered,
         "required_precautions": required_precautions,
-        "evaluated_by": "SmartFix Safety Engine (Deterministic Rules)",
+        "evaluated_by": "Llama Guard 3:1b via Ollama API",
+        "llama_guard_result": {
+            "passed": res.passed,
+            "categories": res.violation_categories,
+            "raw_response": res.raw_model_response,
+        },
     }

@@ -188,15 +188,62 @@ async def orchestrate_request(body: OrchestrationRequest) -> dict[str, Any]:
         )
         execution_trace.append(trace3)
 
-        # Step 4: Safety Engine Service
+        # Step 4: Safety Engine Service (Llama Guard 3:1b)
         safety_data, trace4 = await call_service_endpoint(
             client,
             "POST",
             f"{SAFETY_SERVICE_URL}/safety/evaluate",
-            "Safety Engine",
+            "Safety Engine (Llama Guard 3)",
             {"equipment_id": eq_id, "question": question, "equipment_data": eq_data},
         )
         execution_trace.append(trace4)
+
+        safety_decision = safety_data.get("decision", "ALLOWED")
+
+        # Deterministic Circuit Breaker: Halt execution before LLM if safety is BLOCKED
+        if safety_decision == "BLOCKED":
+            ticket_input = {
+                "equipment_id": eq_id,
+                "issue_summary": f"Llama Guard Circuit Breaker Block for {eq_id}: {question[:100]}",
+                "priority": "CRITICAL",
+                "safety_decision": "BLOCKED",
+            }
+            ticket_data, trace_t = await call_service_endpoint(
+                client, "POST", f"{TICKET_SERVICE_URL}/tickets/create", "Ticket Service", ticket_input
+            )
+            execution_trace.append(trace_t)
+
+            warnings = safety_data.get("warnings", ["Lethal hazard or safety policy violation detected."])
+            precautions = safety_data.get("required_precautions", ["Lockout/Tagout (LOTO) mandatory."])
+            warnings_text = "\n".join(f"- {w}" for w in warnings)
+            precautions_text = "\n".join(f"- {p}" for p in precautions)
+
+            blocked_answer = (
+                f"### ⚠️ OPERATION BLOCKED BY LLAMA GUARD 3 SAFETY CIRCUIT BREAKER\n\n"
+                f"The requested troubleshooting action for **{eq_id}** was intercepted before generative LLM inference. "
+                f"Live electrical access, charged capacitor contact, or defeating safety interlocks poses lethal hazards.\n\n"
+                f"**Safety Warnings:**\n{warnings_text}\n\n"
+                f"**Mandatory Safety Protocols (LOTO):**\n{precautions_text}\n\n"
+                f"**Critical Action Taken:** Service ticket `{ticket_data.get('ticket_id', 'DISPATCHED')}` has been registered. "
+                f"A certified technician must inspect this machinery under verified Zero Energy State conditions."
+            )
+
+            total_duration_ms = round((time.time() - total_start) * 1000, 2)
+            return {
+                "question": question,
+                "equipment_id": eq_id,
+                "answer": blocked_answer,
+                "model": "llama-guard3:1b (circuit-breaker)",
+                "safety_decision": "BLOCKED",
+                "equipment": eq_data,
+                "history": hist_data,
+                "rag": rag_data,
+                "safety": safety_data,
+                "spare_parts": {},
+                "ticket": ticket_data,
+                "total_duration_ms": total_duration_ms,
+                "execution_trace": execution_trace,
+            }
 
         # Step 5: Spare Parts Service
         parts_data, trace5 = await call_service_endpoint(
@@ -219,14 +266,13 @@ async def orchestrate_request(body: OrchestrationRequest) -> dict[str, Any]:
         )
         execution_trace.append(trace6)
 
-        # Step 7: Ticket Service (If Safety is BLOCKED or dispatch required)
+        # Step 7: Ticket Service (If dispatch explicitly requested)
         ticket_data = {}
-        safety_decision = safety_data.get("decision", "ALLOWED")
-        if safety_decision == "BLOCKED" or "ticket" in question.lower() or "dispatch" in question.lower():
+        if "ticket" in question.lower() or "dispatch" in question.lower():
             ticket_input = {
                 "equipment_id": eq_id,
                 "issue_summary": f"Automated ticket for {eq_id}: {question[:100]}",
-                "priority": "CRITICAL" if safety_decision == "BLOCKED" else "HIGH",
+                "priority": "HIGH",
                 "safety_decision": safety_decision,
             }
             ticket_data, trace7 = await call_service_endpoint(
@@ -282,6 +328,20 @@ async def proxy_tickets():
         return r.json()
 
 
+@app.post("/safety/guardrails/evaluate")
+async def proxy_safety_guardrails(request_data: dict[str, Any]):
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        r = await client.post(f"{SAFETY_SERVICE_URL}/safety/guardrails/evaluate", json=request_data)
+        return r.json()
+
+
+@app.post("/safety/evaluate")
+async def proxy_safety_evaluate(request_data: dict[str, Any]):
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        r = await client.post(f"{SAFETY_SERVICE_URL}/safety/evaluate", json=request_data)
+        return r.json()
+
+
 @app.post("/compare")
 @app.post("/orchestrate/compare")
 async def compare_orchestrated_request(body: OrchestrationRequest) -> dict[str, Any]:
@@ -317,15 +377,65 @@ async def compare_orchestrated_request(body: OrchestrationRequest) -> dict[str, 
         )
         execution_trace.append(trace3)
 
-        # Step 4: Safety Engine Service
+        # Step 4: Safety Engine Service (Llama Guard 3:1b)
         safety_data, trace4 = await call_service_endpoint(
             client,
             "POST",
             f"{SAFETY_SERVICE_URL}/safety/evaluate",
-            "Safety Engine",
+            "Safety Engine (Llama Guard 3)",
             {"equipment_id": eq_id, "question": question, "equipment_data": eq_data},
         )
         execution_trace.append(trace4)
+
+        safety_decision = safety_data.get("decision", "ALLOWED")
+
+        # Deterministic Circuit Breaker: Halt comparison before multi-model LLM generation
+        if safety_decision == "BLOCKED":
+            ticket_input = {
+                "equipment_id": eq_id,
+                "issue_summary": f"Llama Guard Circuit Breaker Block for {eq_id}: {question[:100]}",
+                "priority": "CRITICAL",
+                "safety_decision": "BLOCKED",
+            }
+            ticket_data, trace_t = await call_service_endpoint(
+                client, "POST", f"{TICKET_SERVICE_URL}/tickets/create", "Ticket Service", ticket_input
+            )
+            execution_trace.append(trace_t)
+
+            warnings = safety_data.get("warnings", ["Lethal hazard or safety policy violation detected."])
+            precautions = safety_data.get("required_precautions", ["Lockout/Tagout (LOTO) mandatory."])
+            warnings_text = "\n".join(f"- {w}" for w in warnings)
+            precautions_text = "\n".join(f"- {p}" for p in precautions)
+
+            blocked_answer = (
+                f"### ⚠️ OPERATION BLOCKED BY LLAMA GUARD 3 SAFETY CIRCUIT BREAKER\n\n"
+                f"The requested troubleshooting action for **{eq_id}** was intercepted before multi-model inference. "
+                f"Live electrical contact or interlock bypass is strictly prohibited.\n\n"
+                f"**Safety Warnings:**\n{warnings_text}\n\n"
+                f"**Mandatory Safety Protocols (LOTO):**\n{precautions_text}\n\n"
+                f"Service ticket `{ticket_data.get('ticket_id', 'DISPATCHED')}` has been opened."
+            )
+
+            total_duration_ms = round((time.time() - total_start) * 1000, 2)
+            return {
+                "question": question,
+                "equipment_id": eq_id,
+                "answer": blocked_answer,
+                "safety_decision": "BLOCKED",
+                "equipment": eq_data,
+                "history": hist_data,
+                "rag": rag_data,
+                "safety": safety_data,
+                "spare_parts": {},
+                "ticket": ticket_data,
+                "total_duration_ms": total_duration_ms,
+                "execution_trace": execution_trace,
+                "models": {
+                    "codellama": {"name": "Code Llama (7B)", "answer": blocked_answer, "status": "blocked_by_safety"},
+                    "starcoder2": {"name": "StarCoder2 (3B)", "answer": blocked_answer, "status": "blocked_by_safety"},
+                    "qwen2.5-coder": {"name": "Qwen 2.5 Coder (1.5B)", "answer": blocked_answer, "status": "blocked_by_safety"},
+                },
+            }
 
         # Step 5: Spare Parts Service
         parts_data, trace5 = await call_service_endpoint(
@@ -350,12 +460,11 @@ async def compare_orchestrated_request(body: OrchestrationRequest) -> dict[str, 
 
         # Step 7: Ticket Service
         ticket_data = {}
-        safety_decision = safety_data.get("decision", "ALLOWED")
-        if safety_decision == "BLOCKED" or "ticket" in question.lower() or "dispatch" in question.lower():
+        if "ticket" in question.lower() or "dispatch" in question.lower():
             ticket_input = {
                 "equipment_id": eq_id,
                 "issue_summary": f"Comparative ticket for {eq_id}: {question[:100]}",
-                "priority": "CRITICAL" if safety_decision == "BLOCKED" else "HIGH",
+                "priority": "HIGH",
                 "safety_decision": safety_decision,
             }
             ticket_data, trace7 = await call_service_endpoint(
